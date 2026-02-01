@@ -320,3 +320,19 @@ class ScenarioPresets:
         world.clear_obstacles()
         world.reset()
         return {'type': 'empty', 'num_obstacles': 0}
+
+    @staticmethod
+    def scenario_custom(world: WorldModel, num_static: int = 0, num_dynamic: int = 0):
+        """Custom scenario with specified number of obstacles."""
+        world.clear_obstacles()
+        
+        if num_static > 0:
+            static_obs = ObstacleGenerator.generate_random_static_obstacles(
+                num_obstacles=num_static,
+                x_range=SCENARIO_1_X_RANGE,
+                y_range=SCENARIO_1_Y_RANGE
+            )
+            world.add_static_obstacles(static_obs)
+        
+        world.reset()
+        return {'type': 'custom', 'num_static': num_static, 'num_dynamic': num_dynamic}

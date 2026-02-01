@@ -152,12 +152,14 @@ class SimulationController:
     """
     
     def __init__(self, dt: float = DEFAULT_DT, steps: int = 600, 
-                 l5_variant: str = 'default', path_mode: str = 'random'):
+                 l5_variant: str = 'default', path_mode: str = 'random',
+                 n_obstacles: int = None):
         self.dt = dt
         self.steps = steps
         self.current_scenario = 1
         self.l5_variant = l5_variant
         self.path_mode = path_mode
+        self.n_obstacles = n_obstacles  # Override number of obstacles if set
         
         # Use controlled AGV for navigation algorithms (not default)
         use_controlled = (l5_variant != 'default')
@@ -224,8 +226,12 @@ class SimulationController:
         # Reset decision layer
         self.decision.reset()
         
-        # Configure scenario in world model
-        if scenario == 1:
+        # If n_obstacles is set via CLI, use custom scenario
+        if self.n_obstacles is not None:
+            info = ScenarioPresets.scenario_custom(self.world, num_static=self.n_obstacles)
+            for i in range(self.n_obstacles):
+                self.ground_truth_states[i] = 'STATIC'
+        elif scenario == 1:
             info = ScenarioPresets.scenario_static_only(self.world)
             for i in range(100):
                 self.ground_truth_states[i] = 'STATIC'
@@ -446,8 +452,10 @@ class SimulationVisualizer:
     Simulation visualization with matplotlib.
     """
     
-    def __init__(self, controller: SimulationController):
+    def __init__(self, controller: SimulationController, interval: int = 100, steps_per_frame: int = 1):
         self.controller = controller
+        self.interval = interval
+        self.steps_per_frame = steps_per_frame
         self.lidar_history = deque(maxlen=30)
         self.goal_reached_drawn = False  # Track if goal reached state has been drawn
         
@@ -491,7 +499,12 @@ class SimulationVisualizer:
     
     def animate(self, frame: int):
         """Animation function."""
-        # Execute simulation step
+        # Execute simulation steps (multiple if steps_per_frame > 1)
+        for _ in range(self.steps_per_frame - 1):
+            # Run intermediate steps without rendering
+            self.controller.step(frame)
+        
+        # Final step - this one we render
         data = self.controller.step(frame)
         
         agv_pos = data['agv_pos']
@@ -745,7 +758,7 @@ class SimulationVisualizer:
         ani = animation.FuncAnimation(
             self.fig, self.animate, 
             frames=self.controller.steps, 
-            interval=100, repeat=True
+            interval=self.interval, repeat=True
         )
         plt.show()
 
@@ -854,6 +867,14 @@ AUTHOR: HySDG-ESD Project
     )
     
     parser.add_argument(
+        '--l3_obstacles',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Number of static obstacles (overrides --l3_scenario if set, use 0 for empty scenario)'
+    )
+    
+    parser.add_argument(
         '--dt',
         type=float,
         default=0.1,
@@ -867,6 +888,15 @@ AUTHOR: HySDG-ESD Project
         default=600,
         metavar='N',
         help='Maximum simulation steps (default: 600)'
+    )
+    
+    parser.add_argument(
+        '--speed',
+        type=str,
+        choices=['normal', 'fast', 'very_fast'],
+        default='normal',
+        metavar='SPEED',
+        help='Animation speed: normal (1x), fast (10x), very_fast (100x) (default: normal)'
     )
     
     return parser.parse_args()
@@ -896,7 +926,8 @@ def main():
         dt=args.dt, 
         steps=args.steps, 
         l5_variant=args.l5_navigation,
-        path_mode=args.l3_path
+        path_mode=args.l3_path,
+        n_obstacles=args.l3_obstacles
     )
     
     # Set initial scenario if specified
@@ -909,8 +940,17 @@ def main():
     print("  • Close window to save logs and metrics")
     print("="*60)
     
+    # Map speed to animation interval (ms) and steps per frame
+    # (interval_ms, steps_per_frame)
+    speed_map = {
+        'normal': (100, 1),      # 1x speed
+        'fast': (10, 1),         # 10x speed  
+        'very_fast': (1, 10)     # 100x speed (10ms interval * 10 steps)
+    }
+    interval, steps_per_frame = speed_map[args.speed]
+    
     # Create visualizer and start
-    visualizer = SimulationVisualizer(controller)
+    visualizer = SimulationVisualizer(controller, interval=interval, steps_per_frame=steps_per_frame)
     visualizer.run()
 
 
