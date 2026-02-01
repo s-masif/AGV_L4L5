@@ -97,6 +97,8 @@ python simulation.py --help
 | `--l5_navigation` | `default`, `vfh`, `dwa`, `gapnav` | Navigation algorithm |
 | `--l3_path` | `random`, `straight` | AGV path mode |
 | `--l3_scenario` | `static`, `dynamic`, `mixed` | Obstacle scenario |
+| `--l3_obstacles` | int | Number of static obstacles (overrides scenario) |
+| `--speed` | `normal`, `fast`, `very_fast` | Animation speed (1x, 10x, 100x) |
 | `--dt` | float | Simulation time step (default: 0.1s) |
 | `--steps` | int | Maximum simulation steps (default: 600) |
 
@@ -114,6 +116,12 @@ python simulation.py --l5_navigation vfh --l3_scenario dynamic --l3_path straigh
 
 # DWA navigation with mixed obstacles and straight path
 python simulation.py --l5_navigation dwa --l3_path straight --l3_scenario mixed
+
+# Empty scenario (no obstacles) with fast animation
+python simulation.py --l3_path straight --l5_navigation vfh --l3_obstacles 0 --speed fast
+
+# Custom number of obstacles with very fast animation
+python simulation.py --l3_path straight --l5_navigation gapnav --l3_obstacles 10 --speed very_fast
 ```
 
 ---
