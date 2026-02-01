@@ -1,0 +1,15 @@
+# HySDG-ESD AGV Simulator - Requirements
+# =======================================
+
+# Core scientific computing
+numpy>=1.21
+scipy>=1.8
+
+# Visualization
+matplotlib>=3.5
+
+# Machine learning (DBSCAN clustering)
+scikit-learn>=1.2
+
+# Parallel processing (optional, for faster DBSCAN)
+joblib>=1.1
