@@ -6,9 +6,9 @@ A multi-layer AGV (Autonomous Guided Vehicle) navigation simulator with LiDAR-ba
 
 ## ✨ Features
 
-- **Layered Architecture**: Clean separation between World Model (L3), Detection (L4), and Decision (L5) layers
+- **Modular Package Architecture**: Clean separation between World Model (`L3_world`), Detection (`L4_detection`), and Decision (`L5_decision`) packages
 - **Multiple Navigation Algorithms**: 
-  - Default reactive navigation
+  - Simple reactive navigation (repulsive field)
   - VFH (Vector Field Histogram)
   - DWA (Dynamic Window Approach)
   - GapNav + APF (Gap Navigation with Artificial Potential Fields)
@@ -16,6 +16,7 @@ A multi-layer AGV (Autonomous Guided Vehicle) navigation simulator with LiDAR-ba
 - **DBSCAN Clustering**: Real-time obstacle clustering from point clouds
 - **EKF Tracking**: Extended Kalman Filter for multi-object tracking
 - **HySDG-ESD Classification**: Dynamic vs static obstacle classification with ego-motion compensation
+- **Unified Configuration**: Each package has its own `config.py` for easy tuning
 - **Interactive Visualization**: Real-time plots with scenario switching
 
 ---
@@ -25,16 +26,38 @@ A multi-layer AGV (Autonomous Guided Vehicle) navigation simulator with LiDAR-ba
 ```
 HySDG-ESD-AGV-Simulator/
 ├── simulation.py              # Main entry point and visualization
-├── L3_world_model_layer.py    # World, AGV, LiDAR, obstacles simulation
-├── L4_detection_layer.py      # DBSCAN clustering, EKF tracking
-├── L5_decision_layer.py       # Default navigation and classification
-├── L5_decision_vfh.py         # VFH navigation algorithm
-├── L5_decision_dwa.py         # DWA navigation algorithm
-├── L5_decision_gapnav.py      # GapNav + APF navigation algorithm
-├── config_L3.py               # L3 configuration parameters
-├── config_L4.py               # L4 configuration parameters
-├── config_L5.py               # L5 configuration parameters
-├── config_L5_alternatives.py  # Alternative algorithms configuration
+│
+├── L3_world/                  # World Model Package
+│   ├── __init__.py            # Package exports
+│   ├── config.py              # L3 configuration parameters
+│   ├── lidar.py               # LiDAR simulator
+│   ├── agv.py                 # AGV controllers (Random, Controlled, GoalSeeking)
+│   ├── obstacles.py           # Obstacle generator
+│   └── world.py               # WorldModel, ScenarioPresets
+│
+├── L4_detection/              # Detection & Recognition Package
+│   ├── __init__.py            # Package exports
+│   ├── config.py              # L4 configuration (EKF, DBSCAN, Tracker, Classifier)
+│   ├── types.py               # ObstacleState, LidarPoint, TrackedObstacle
+│   ├── transforms.py          # Coordinate transformations
+│   ├── kalman.py              # Extended Kalman Filter (EKF-CV)
+│   ├── lidar.py               # LiDAR processor with DBSCAN clustering
+│   ├── classifier.py          # HySDG-ESD calculator, ObstacleClassifier
+│   └── tracker.py             # Multi-object tracker, DetectionLayer
+│
+├── L5_decision/               # Decision & Navigation Package
+│   ├── __init__.py            # Package exports
+│   ├── config.py              # L5 configuration (all algorithms unified)
+│   ├── types.py               # NavigationAction, NavigationDecision, etc.
+│   ├── base.py                # BaseDecisionMaker (shared methods)
+│   ├── layer.py               # DecisionLayer, DWADecisionLayer, etc.
+│   └── algorithms/            # Navigation algorithms
+│       ├── __init__.py
+│       ├── simple.py          # Simple repulsive field navigation
+│       ├── dwa.py             # Dynamic Window Approach
+│       ├── vfh.py             # Vector Field Histogram
+│       └── gapnav.py          # Gap-based + APF + Enhanced DWA
+│
 ├── requirements.txt           # Python dependencies
 ├── LICENSE                    # MIT License
 └── README.md                  # This file
@@ -107,7 +130,7 @@ python simulation.py --l5_navigation dwa --l3_path straight --l3_scenario mixed
 
 ## 🧠 Navigation Algorithms
 
-### Default
+### Simple (Default)
 Rule-based reactive navigation with inverse-distance obstacle repulsion. Simple but effective for basic obstacle avoidance.
 
 ### VFH (Vector Field Histogram)
@@ -121,19 +144,66 @@ State-of-the-art hybrid algorithm. Detects navigable gaps, uses Artificial Poten
 
 ---
 
+## ⚙️ Configuration
+
+Each package has its own `config.py` file for easy parameter tuning:
+
+| File | Contents |
+|------|----------|
+| `L3_world/config.py` | World bounds, AGV parameters, LiDAR settings, scenario configs |
+| `L4_detection/config.py` | DBSCAN, EKF, tracker, classifier, HySDG-ESD parameters |
+| `L5_decision/config.py` | Robot limits, navigation, VFH, DWA, GapNav parameters (unified) |
+
+---
+
 ## 🔧 Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    L5: Decision Layer                       │
-│  Classification, Navigation Decisions, Obstacle Avoidance  │
+│  Navigation Algorithms (Simple, DWA, VFH, GapNav)          │
+│  Path Planning, Obstacle Avoidance, Recovery Behaviors     │
 ├─────────────────────────────────────────────────────────────┤
 │                    L4: Detection Layer                      │
-│      DBSCAN Clustering, EKF Tracking, State Estimation     │
+│  DBSCAN Clustering, EKF Tracking, HySDG-ESD Classification │
+│  Obstacle Recognition (Static/Dynamic/Unknown)             │
 ├─────────────────────────────────────────────────────────────┤
 │                  L3: World Model Layer                      │
-│        World Simulation, AGV, LiDAR, Obstacles              │
+│  World Simulation, AGV Controllers, LiDAR, Obstacles       │
 └─────────────────────────────────────────────────────────────┘
+```
+
+### Layer Responsibilities
+
+| Layer | Package | Responsibility |
+|-------|---------|----------------|
+| **L3** | `L3_world` | World simulation, AGV physics, LiDAR emulation, obstacle management |
+| **L4** | `L4_detection` | Obstacle detection, tracking, classification (DBSCAN, EKF, HySDG-ESD) |
+| **L5** | `L5_decision` | Navigation decisions, path planning, algorithm execution |
+
+### Python API
+
+```python
+# Import packages
+from L3_world import WorldModel, ScenarioPresets
+from L4_detection import DetectionLayer, ObstacleState
+from L5_decision import DWADecisionLayer, GapNavDecisionLayer
+
+# Create world
+world = WorldModel(dt=0.1, controlled_mode=True, path_mode='straight')
+ScenarioPresets.scenario_mixed(world)
+
+# Create decision layer
+decision_layer = GapNavDecisionLayer(dt=0.1)
+decision_layer.set_goal(np.array([29.0, 0.0]))
+
+# Simulation loop
+state = world.update()
+obstacles = decision_layer.process_scan(
+    state['lidar_ranges'], state['lidar_angles'],
+    state['agv_pos'], state['agv_vel'], state['agv_heading']
+)
+decision = decision_layer.get_navigation_decision(state['agv_pos'], state['agv_heading'])
 ```
 
 ---

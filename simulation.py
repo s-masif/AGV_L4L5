@@ -23,38 +23,38 @@ from datetime import datetime
 sys.stdout.reconfigure(encoding='utf-8')
 
 # Import dei Layer
-from L3_world_model_layer import (
+from L3_world import (
     WorldModel, 
     ScenarioPresets, 
     WORLD_BOUNDS,
     DEFAULT_DT
 )
-from L5_decision_layer import (
+from L5_decision import (
     DecisionLayer,
+    DWADecisionLayer,
+    VFHDecisionLayer,
+    GapNavDecisionLayer,
     ObstacleState,
     NavigationAction
 )
 
-# L5 Alternative Layers (lazy import to avoid loading all at startup)
+# L5 Alternative Layers
 L5_VARIANTS = {
-    'default': 'L5_decision_layer.DecisionLayer',
-    'vfh': 'L5_decision_vfh.VFHDecisionLayer',
-    'dwa': 'L5_decision_dwa.DWADecisionLayer',
-    'gapnav': 'L5_decision_gapnav.GapNavDecisionLayer'
+    'default': 'DecisionLayer',
+    'vfh': 'VFHDecisionLayer',
+    'dwa': 'DWADecisionLayer',
+    'gapnav': 'GapNavDecisionLayer'
 }
 
 def get_decision_layer_class(variant: str):
-    """Dynamically import and return the decision layer class."""
+    """Return the decision layer class for the specified variant."""
     if variant == 'default':
         return DecisionLayer
     elif variant == 'vfh':
-        from L5_decision_vfh import VFHDecisionLayer
         return VFHDecisionLayer
     elif variant == 'dwa':
-        from L5_decision_dwa import DWADecisionLayer
         return DWADecisionLayer
     elif variant == 'gapnav':
-        from L5_decision_gapnav import GapNavDecisionLayer
         return GapNavDecisionLayer
     else:
         raise ValueError(f"Unknown L5 variant: {variant}")
@@ -191,6 +191,11 @@ class SimulationController:
         self.deq_data = {}
         self.detected_ids = set()
         
+        # Goal tracking
+        self.goal_reached = False
+        self.goal_reached_time = None
+        self.goal_reached_frame = None
+        
         # Metrics
         self.obstacle_log = []
         self.scientific_metrics = ScientificMetrics()
@@ -211,6 +216,11 @@ class SimulationController:
         self.scientific_metrics = ScientificMetrics()
         self.ground_truth_states = {}
         
+        # Reset goal tracking
+        self.goal_reached = False
+        self.goal_reached_time = None
+        self.goal_reached_frame = None
+        
         # Reset decision layer
         self.decision.reset()
         
@@ -229,6 +239,9 @@ class SimulationController:
                 self.ground_truth_states[i] = 'STATIC'
             for i in range(50, 100):
                 self.ground_truth_states[i] = 'DYNAMIC'
+        elif scenario == 4:
+            info = ScenarioPresets.scenario_empty(self.world)
+            # No obstacles, no ground truth
         
         print(f"\n{'='*60}")
         print(f"Scenario {scenario} initialized")
@@ -241,7 +254,30 @@ class SimulationController:
         Returns:
             Dictionary with all current frame data
         """
-        # L3: Update world
+        # If goal is already reached, return frozen state immediately
+        if self.goal_reached:
+            # Get current AGV position (frozen)
+            agv_state = self.world.agv.get_state()
+            agv_pos = agv_state['position']
+            agv_heading = agv_state['heading']
+            
+            return {
+                'frame': self.goal_reached_frame,
+                'time': self.goal_reached_time,
+                'agv_pos': agv_pos,
+                'agv_vel': np.array([0.0, 0.0]),
+                'agv_heading': agv_heading,
+                'lidar_ranges': np.array([]),
+                'lidar_angles': np.array([]),
+                'detected_obstacles': self.decision.get_all_obstacles() if hasattr(self.decision, 'get_all_obstacles') else [],
+                'nav_decision': self.decision.get_navigation_decision(agv_pos, agv_heading),
+                'static_count': 0,
+                'dynamic_count': 0,
+                'ground_truth_obstacles': [],
+                'goal_reached': True
+            }
+        
+        # L3: Update world (only if goal not reached)
         world_state = self.world.update()
         
         agv_pos = world_state['agv_pos']
@@ -249,6 +285,12 @@ class SimulationController:
         agv_heading = world_state['agv_heading']
         ranges = world_state['lidar_ranges']
         angles = world_state['lidar_angles']
+        
+        # Track goal reached
+        if world_state.get('goal_reached', False) and not self.goal_reached:
+            self.goal_reached = True
+            self.goal_reached_time = frame * self.dt
+            self.goal_reached_frame = frame
         
         self.agv_trajectory.append(agv_pos.copy())
         
@@ -338,7 +380,8 @@ class SimulationController:
             'nav_decision': nav_decision,
             'static_count': static_count,
             'dynamic_count': dynamic_count,
-            'ground_truth_obstacles': world_state['obstacles']
+            'ground_truth_obstacles': world_state['obstacles'],
+            'goal_reached': world_state.get('goal_reached', False)
         }
     
     def save_logs(self):
@@ -406,6 +449,7 @@ class SimulationVisualizer:
     def __init__(self, controller: SimulationController):
         self.controller = controller
         self.lidar_history = deque(maxlen=30)
+        self.goal_reached_drawn = False  # Track if goal reached state has been drawn
         
         # Setup figure
         self.fig = plt.figure(figsize=(16, 10))
@@ -418,22 +462,26 @@ class SimulationVisualizer:
         self.ax_info = self.fig.add_subplot(gs[2, :])
         
         # Buttons
-        ax_btn1 = plt.axes([0.20, 0.01, 0.15, 0.04])
-        ax_btn2 = plt.axes([0.42, 0.01, 0.15, 0.04])
-        ax_btn3 = plt.axes([0.64, 0.01, 0.15, 0.04])
+        ax_btn1 = plt.axes([0.12, 0.01, 0.15, 0.04])
+        ax_btn2 = plt.axes([0.30, 0.01, 0.15, 0.04])
+        ax_btn3 = plt.axes([0.48, 0.01, 0.15, 0.04])
+        ax_btn4 = plt.axes([0.66, 0.01, 0.15, 0.04])
         
         self.btn1 = Button(ax_btn1, 'Scenario 1: Static', color='lightblue')
         self.btn2 = Button(ax_btn2, 'Scenario 2: Dynamic', color='lightcoral')
         self.btn3 = Button(ax_btn3, 'Scenario 3: Mixed', color='lightgreen')
+        self.btn4 = Button(ax_btn4, 'Scenario 4: Empty', color='lightyellow')
         
         self.btn1.on_clicked(lambda e: self._on_scenario(1))
         self.btn2.on_clicked(lambda e: self._on_scenario(2))
         self.btn3.on_clicked(lambda e: self._on_scenario(3))
+        self.btn4.on_clicked(lambda e: self._on_scenario(4))
         
         self.fig.canvas.mpl_connect('close_event', self._on_close)
     
     def _on_scenario(self, scenario: int):
         self.controller.reset_scenario(scenario)
+        self.goal_reached_drawn = False  # Reset flag when changing scenario
     
     def _on_close(self, event):
         print("\n" + "="*60)
@@ -454,8 +502,14 @@ class SimulationVisualizer:
         current_time = data['time']
         static_count = data['static_count']
         dynamic_count = data['dynamic_count']
+        goal_reached = data.get('goal_reached', False)
         
-        self.lidar_history.append((data['lidar_ranges'], data['lidar_angles']))
+        # Use frozen frame number when goal is reached
+        display_frame = data['frame'] if goal_reached else frame
+        
+        # Only update lidar history if goal not reached
+        if not goal_reached:
+            self.lidar_history.append((data['lidar_ranges'], data['lidar_angles']))
         
         # === Main View ===
         self.ax_main.clear()
@@ -497,19 +551,32 @@ class SimulationVisualizer:
                                  ha='center', fontsize=8, fontweight='bold',
                                  color='darkgreen', zorder=15)
             
-            # Goal position marker (red star)
+            # Goal position marker (red star or green if reached)
             if self.controller.world.goal_pos is not None:
                 goal_pos = self.controller.world.goal_pos
-                self.ax_main.plot(goal_pos[0], goal_pos[1], 'r*', markersize=20,
-                                 markeredgecolor='darkred', markeredgewidth=1.5,
-                                 alpha=0.9, zorder=5, label='Goal')
-                self.ax_main.annotate('GOAL', (goal_pos[0], goal_pos[1] + 0.8),
-                                     ha='center', fontsize=8, fontweight='bold',
-                                     color='darkred', zorder=15)
                 
-                # Line from AGV to goal (dashed)
-                self.ax_main.plot([agv_pos[0], goal_pos[0]], [agv_pos[1], goal_pos[1]],
-                                 'r:', alpha=0.3, linewidth=1.5, zorder=3)
+                if goal_reached:
+                    # Goal reached - show in green with celebration
+                    self.ax_main.plot(goal_pos[0], goal_pos[1], 'g*', markersize=25,
+                                     markeredgecolor='darkgreen', markeredgewidth=2,
+                                     alpha=1.0, zorder=20, label='Goal Reached!')
+                    self.ax_main.annotate('GOAL REACHED!', (goal_pos[0], goal_pos[1] + 1.0),
+                                         ha='center', fontsize=10, fontweight='bold',
+                                         color='darkgreen', zorder=20,
+                                         bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+                else:
+                    # Goal not yet reached
+                    self.ax_main.plot(goal_pos[0], goal_pos[1], 'r*', markersize=20,
+                                     markeredgecolor='darkred', markeredgewidth=1.5,
+                                     alpha=0.9, zorder=5, label='Goal')
+                    self.ax_main.annotate('GOAL', (goal_pos[0], goal_pos[1] + 0.8),
+                                         ha='center', fontsize=8, fontweight='bold',
+                                         color='darkred', zorder=15)
+                
+                # Line from AGV to goal (dashed) - only if not reached
+                if not goal_reached:
+                    self.ax_main.plot([agv_pos[0], goal_pos[0]], [agv_pos[1], goal_pos[1]],
+                                     'r:', alpha=0.3, linewidth=1.5, zorder=3)
         
         # Ground truth obstacles
         for obs_gt in data['ground_truth_obstacles']:
@@ -577,11 +644,22 @@ class SimulationVisualizer:
                                          c='red', s=20, marker='o', alpha=0.9, zorder=10)
         
         # === Distance Chart ===
-        if frame % 5 == 0:
+        # Only update if goal not reached OR it's the first draw after goal reached
+        should_update_deq = frame % 5 == 0 and (not goal_reached or not self.goal_reached_drawn)
+        if should_update_deq:
+            if goal_reached:
+                self.goal_reached_drawn = True
+                
             self.ax_deq.clear()
             self.ax_deq.set_xlabel('Time (s)', fontsize=9, fontweight='bold')
             self.ax_deq.set_ylabel('d_eq (m)', fontsize=9, fontweight='bold')
-            self.ax_deq.set_title('Distance Metrics', fontsize=10, fontweight='bold')
+            
+            # Show different title when goal is reached
+            if goal_reached:
+                self.ax_deq.set_title(f'Distance Metrics (FROZEN at {current_time:.1f}s)', 
+                                     fontsize=10, fontweight='bold', color='green')
+            else:
+                self.ax_deq.set_title('Distance Metrics', fontsize=10, fontweight='bold')
             self.ax_deq.grid(True, alpha=0.35)
             
             times_list = list(self.controller.time_data)
@@ -618,12 +696,21 @@ class SimulationVisualizer:
             algo_desc = algo_descriptions.get(self.controller.l5_variant, 'Unknown')
             path_desc = path_descriptions.get(self.controller.path_mode, 'Unknown')
             
-            title = f'SYSTEM STATUS | L5: {algo_desc} | Path: {path_desc}'
+            # Different title if goal reached
+            if goal_reached:
+                title = f'🏁 GOAL REACHED! | L5: {algo_desc} | Path: {path_desc}'
+                title_color = '#4CAF50'
+                title_bg = '#E8F5E9'
+            else:
+                title = f'SYSTEM STATUS | L5: {algo_desc} | Path: {path_desc}'
+                title_color = '#C2185B'
+                title_bg = '#FCE4EC'
+            
             self.ax_info.text(0.5, 0.95, title, 
                              ha='center', va='top',
                              fontsize=9, fontweight='bold',
-                             bbox=dict(boxstyle='round,pad=0.5', facecolor='#FCE4EC',
-                                      edgecolor='#C2185B', linewidth=1.5))
+                             bbox=dict(boxstyle='round,pad=0.5', facecolor=title_bg,
+                                      edgecolor=title_color, linewidth=1.5))
             
             # Stats
             stats = self.controller.decision.get_statistics()
@@ -633,10 +720,13 @@ class SimulationVisualizer:
             if self.controller.path_mode == 'straight' and self.controller.world.goal_pos is not None:
                 goal = self.controller.world.goal_pos
                 dist_to_goal = np.linalg.norm(goal - agv_pos)
-                goal_info = f" | Goal: ({goal[0]:.0f},{goal[1]:.0f}) Dist: {dist_to_goal:.1f}m"
+                if goal_reached:
+                    goal_info = f" | ✅ GOAL REACHED in {current_time:.1f}s"
+                else:
+                    goal_info = f" | Goal: ({goal[0]:.0f},{goal[1]:.0f}) Dist: {dist_to_goal:.1f}m"
             
             info_lines = [
-                f"Time: {current_time:.1f}s  |  Frame: {frame}/{self.controller.steps}",
+                f"Time: {current_time:.1f}s  |  Frame: {display_frame}/{self.controller.steps}",
                 f"AGV: ({agv_pos[0]:.1f}, {agv_pos[1]:.1f}) | V={np.linalg.norm(agv_vel):.2f}m/s{goal_info}",
                 f"Heading: {np.rad2deg(agv_heading):.1f}°",
                 f"Navigation: {nav_decision.action.value} | Safety: {nav_decision.safety_score:.2f}",
