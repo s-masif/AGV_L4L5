@@ -50,7 +50,8 @@ from .algorithms import (
     SimpleDecisionMaker,
     DWADecisionMaker,
     VFHDecisionMaker,
-    GapNavDecisionMaker
+    GapNavDecisionMaker,
+    VODecisionMaker
 )
 
 # Complete decision layers
@@ -58,7 +59,8 @@ from .layer import (
     DecisionLayer,
     DWADecisionLayer,
     VFHDecisionLayer,
-    GapNavDecisionLayer
+    GapNavDecisionLayer,
+    VODecisionLayer
 )
 
 __all__ = [
@@ -84,12 +86,14 @@ __all__ = [
     'DWADecisionMaker',
     'VFHDecisionMaker',
     'GapNavDecisionMaker',
+    'VODecisionMaker',
     
     # Complete layers
     'DecisionLayer',
     'DWADecisionLayer',
     'VFHDecisionLayer',
     'GapNavDecisionLayer',
+    'VODecisionLayer',
 ]
 
 __version__ = '2.0.0'

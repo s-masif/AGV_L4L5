@@ -12,6 +12,14 @@ A multi-layer AGV (Autonomous Guided Vehicle) navigation simulator with LiDAR-ba
   - VFH (Vector Field Histogram)
   - DWA (Dynamic Window Approach)
   - GapNav + APF (Gap Navigation with Artificial Potential Fields)
+  - VO (Velocity Obstacles with TTC for dynamic obstacles, static/dynamic-aware, conservative safety logic)
+    - Distinguishes static vs dynamic obstacles for safety margins
+    - Emergency reverse and stop logic for critical threats
+    - Allows closer approach to static obstacles, more conservative for dynamic
+    - Ignores obstacles moving away, goes straight to goal if clear
+- **Realistic Visualization**: AGV and obstacles are drawn with true physical radii and safety margins
+- **Status Feedback**: Colored status box (safe, warning, danger, collision) in UI info panel (no emojis)
+- **Unified Configuration**: All VO and navigation parameters are in `L5_decision/config.py` for easy tuning
 - **2D LiDAR Simulation**: Configurable noise, range, and field of view
 - **DBSCAN Clustering**: Real-time obstacle clustering from point clouds
 - **EKF Tracking**: Extended Kalman Filter for multi-object tracking
@@ -56,7 +64,8 @@ HySDG-ESD-AGV-Simulator/
 │       ├── simple.py          # Simple repulsive field navigation
 │       ├── dwa.py             # Dynamic Window Approach
 │       ├── vfh.py             # Vector Field Histogram
-│       └── gapnav.py          # Gap-based + APF + Enhanced DWA
+│       ├── gapnav.py          # Gap-based + APF + Enhanced DWA
+│       └── velocity_obstacles.py  # Velocity Obstacles (TTC-based)
 │
 ├── requirements.txt           # Python dependencies
 ├── LICENSE                    # MIT License
@@ -94,7 +103,7 @@ python simulation.py --help
 
 | Argument | Values | Description |
 |----------|--------|-------------|
-| `--l5_navigation` | `default`, `vfh`, `dwa`, `gapnav` | Navigation algorithm |
+| `--l5_navigation` | `default`, `vfh`, `dwa`, `gapnav`, `vo` | Navigation algorithm |
 | `--l3_path` | `random`, `straight` | AGV path mode |
 | `--l3_scenario` | `static`, `dynamic`, `mixed` | Obstacle scenario (default: mixed) |
 | `--l3_obstacles` | int | Total number of obstacles (overrides scenario defaults). For `mixed`: 1/3 dynamic, 2/3 static |
@@ -108,23 +117,26 @@ python simulation.py --help
 # Random wandering with default navigation (mixed obstacles by default)
 python simulation.py
 
-# Navigate from left to right with GapNav (mixed obstacles by default)
-python simulation.py --l5_navigation gapnav --l3_path straight
-
 # VFH navigation with dynamic obstacles only
 python simulation.py --l5_navigation vfh --l3_scenario dynamic --l3_path straight
 
 # DWA navigation with static obstacles only
 python simulation.py --l5_navigation dwa --l3_path straight --l3_scenario static
 
+# Navigate from left to right with GapNav (mixed obstacles by default)
+python simulation.py --l5_navigation gapnav --l3_path straight
+
+# VO (Velocity Obstacles) - best for dynamic obstacle scenarios
+python simulation.py --l5_navigation vo --l3_scenario dynamic --l3_path straight
+
 # Empty scenario (no obstacles) with fast animation
-python simulation.py --l3_path straight --l5_navigation vfh --l3_obstacles 0 --speed fast
+python simulation.py --l3_path straight --l5_navigation vo --l3_obstacles 0 --speed fast
 
 # Custom 15 obstacles with mixed scenario (5 dynamic + 10 static)
-python simulation.py --l3_path straight --l5_navigation gapnav --l3_obstacles 15
+python simulation.py --l3_path straight --l5_navigation vo --l3_obstacles 15
 
 # Custom 12 dynamic obstacles only
-python simulation.py --l5_navigation gapnav --l3_path straight --l3_scenario dynamic --l3_obstacles 12
+python simulation.py --l5_navigation vo --l3_path straight --l3_scenario dynamic --l3_obstacles 12
 ```
 
 ---
@@ -153,6 +165,26 @@ Samples velocities within acceleration limits, predicts trajectories, and scores
 ### GapNav + APF
 State-of-the-art hybrid algorithm. Detects navigable gaps, uses Artificial Potential Fields for smooth obstacle repulsion, and enhanced DWA for trajectory optimization. Includes multi-layer recovery (wall-follow, reverse, random escape).
 
+### Velocity Obstacles (VO)
+Standalone algorithm specialized for **dynamic obstacle avoidance**. Uses:
+- **Time-To-Collision (TTC)**: Predicts when collision will occur with each moving obstacle
+- **Velocity Obstacles**: Computes forbidden velocity regions (cones)
+- **Avoidance strategies** (in order of preference):
+  1. **Pass behind**: Slow down to let obstacle pass (preferred)
+  2. **Slow down**: Reduce speed when approaching collision zone
+  3. **Emergency stop**: Immediate stop for critical threats (TTC < 2s)
+  4. **Pass front**: Accelerate past slow-moving obstacles (if safe)
+
+#### 2026+ Improvements
+- **Static vs Dynamic**: Safety thresholds are reduced for static obstacles, allowing closer approach; dynamic obstacles use full conservative margins
+- **Emergency Reverse**: If too close, AGV reverses away from obstacle
+- **Warning/Danger Zones**: UI shows colored box for safe, warning, danger, or collision state
+- **Ignores obstacles moving away**: AGV proceeds directly to goal if no collision threat
+- **All parameters in config.py**: Easy to tune VO and safety logic
+- **No emojis in UI**: Status is professional and clear
+
+Best for scenarios with dynamic/moving obstacles. Use with `--l3_scenario dynamic`.
+
 ---
 
 ## ⚙️ Configuration
@@ -163,7 +195,7 @@ Each package has its own `config.py` file for easy parameter tuning:
 |------|----------|
 | `L3_world/config.py` | World bounds, AGV parameters, LiDAR settings, scenario configs |
 | `L4_detection/config.py` | DBSCAN, EKF, tracker, classifier, HySDG-ESD parameters |
-| `L5_decision/config.py` | Robot limits, navigation, VFH, DWA, GapNav parameters (unified) |
+| `L5_decision/config.py` | Robot limits, navigation, VFH, DWA, GapNav, VO parameters (unified) |
 
 ---
 
@@ -172,7 +204,7 @@ Each package has its own `config.py` file for easy parameter tuning:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    L5: Decision Layer                       │
-│  Navigation Algorithms (Simple, DWA, VFH, GapNav)          │
+│  Navigation Algorithms (Simple, DWA, VFH, GapNav, VO)      │
 │  Path Planning, Obstacle Avoidance, Recovery Behaviors     │
 ├─────────────────────────────────────────────────────────────┤
 │                    L4: Detection Layer                      │
@@ -225,6 +257,15 @@ The simulator generates logs in the `log/` directory:
 - `obstacle_log_*.csv` - Obstacle detection history
 - `scientific_metrics_*.json` - Classification accuracy metrics
 - `system_state_*.json` - Complete system state snapshots
+
+---
+
+## 🆕 2026+ Major Updates
+
+- **VO logic**: Now distinguishes static/dynamic obstacles, with conservative safety, emergency reverse, and warning/danger logic
+- **Visualization**: AGV and obstacles drawn with real radii and safety margins
+- **Status UI**: Colored box for safe/warning/danger/collision, no emojis
+- **Config**: All VO/navigation parameters in `L5_decision/config.py`
 
 ---
 

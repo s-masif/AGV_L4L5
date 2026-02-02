@@ -163,6 +163,44 @@ DIRECT_PATH_MIN_CLEARANCE = 1.5
 DIRECT_PATH_CORRIDOR_MARGIN = ROBOT_EFFECTIVE_RADIUS
 
 # =============================================================================
+# VELOCITY OBSTACLES (VO) PARAMETERS
+# =============================================================================
+# Time horizon for collision prediction (seconds)
+VO_TIME_HORIZON = 6.0
+
+# Critical TTC threshold - immediate action required (seconds)
+VO_TTC_CRITICAL = 3.0
+
+# Warning TTC threshold - start planning avoidance (seconds)
+VO_TTC_WARNING = 5.0
+
+# Minimum relative velocity to consider as collision threat (m/s)
+VO_MIN_RELATIVE_VELOCITY = 0.1
+
+# Safety expansion of velocity obstacle cone (radians)
+# Larger = AGV passes farther from obstacles
+VO_CONE_SAFETY_MARGIN = np.deg2rad(30)
+
+# Extra safety radius added to obstacles (meters)
+# Larger = AGV keeps more distance
+VO_OBSTACLE_SAFETY_RADIUS = 0.5
+
+# Static obstacle repulsion distance (meters)
+# Larger = AGV starts avoiding static obstacles earlier
+VO_STATIC_REPULSION_DISTANCE = 3.5
+
+# Static obstacle repulsion strength multiplier
+# Larger = stronger push away from static obstacles
+VO_STATIC_REPULSION_STRENGTH = 1.5
+
+# Danger zone distance (meters) - AGV will STOP if approaching this close
+# This is the edge-to-edge distance, not center distance
+VO_DANGER_DISTANCE = 0.6
+
+# Emergency reverse distance (meters) - AGV will REVERSE if closer than this
+VO_EMERGENCY_REVERSE_DISTANCE = 0.3
+
+# =============================================================================
 # SIMULATION PARAMETERS
 # =============================================================================
 SIMULATION_DT = 0.1             # Simulation time step (seconds)

@@ -34,16 +34,19 @@ from L5_decision import (
     DWADecisionLayer,
     VFHDecisionLayer,
     GapNavDecisionLayer,
+    VODecisionLayer,
     ObstacleState,
     NavigationAction
 )
+from L5_decision.config import ROBOT_RADIUS, ROBOT_EFFECTIVE_RADIUS, NAV_CRITICAL_DISTANCE, NAV_SAFETY_DISTANCE
 
 # L5 Alternative Layers
 L5_VARIANTS = {
     'default': 'DecisionLayer',
     'vfh': 'VFHDecisionLayer',
     'dwa': 'DWADecisionLayer',
-    'gapnav': 'GapNavDecisionLayer'
+    'gapnav': 'GapNavDecisionLayer',
+    'vo': 'VODecisionLayer'
 }
 
 def get_decision_layer_class(variant: str):
@@ -56,6 +59,8 @@ def get_decision_layer_class(variant: str):
         return DWADecisionLayer
     elif variant == 'gapnav':
         return GapNavDecisionLayer
+    elif variant == 'vo':
+        return VODecisionLayer
     else:
         raise ValueError(f"Unknown L5 variant: {variant}")
 
@@ -576,8 +581,11 @@ class SimulationVisualizer:
         self.ax_main.set_xlabel('X (m)', fontsize=10, fontweight='bold')
         self.ax_main.set_ylabel('Y (m)', fontsize=10, fontweight='bold')
         
-        # AGV
-        self.ax_main.add_patch(Circle(agv_pos, 0.6, fc='cyan', ec='blue', lw=3, alpha=0.9, zorder=10))
+        # AGV - Physical body (ROBOT_RADIUS) + Safety margin visualization
+        self.ax_main.add_patch(Circle(agv_pos, ROBOT_EFFECTIVE_RADIUS, fc='none', ec='blue', 
+                                     lw=1, alpha=0.4, linestyle='--', zorder=9))  # Safety margin
+        self.ax_main.add_patch(Circle(agv_pos, ROBOT_RADIUS, fc='cyan', ec='blue', 
+                                     lw=2, alpha=0.9, zorder=10))  # Physical body
         vel_arrow = FancyArrow(agv_pos[0], agv_pos[1],
                               agv_vel[0] * 1.5, agv_vel[1] * 1.5,
                               width=0.15, head_width=0.4, head_length=0.3,
@@ -656,7 +664,7 @@ class SimulationVisualizer:
             else:
                 continue
             
-            self.ax_main.add_patch(Circle(obs.center, 0.32, fc=color, ec=edge_color, 
+            self.ax_main.add_patch(Circle(obs.center, getattr(obs, 'radius', 0.3), fc=color, ec=edge_color, 
                                          lw=2.5, alpha=0.85, zorder=8))
             
             # Velocity arrow per dynamic
@@ -670,7 +678,7 @@ class SimulationVisualizer:
             
             # State label above detected obstacle (S/D indicator)
             state_abbrev = 'S' if state_str == 'STATIC' else 'D'
-            self.ax_main.text(obs.center[0], obs.center[1] + 0.5, state_abbrev,
+            self.ax_main.text(obs.center[0], obs.center[1] + 0.7, state_abbrev,
                              ha='center', va='bottom', fontsize=7, fontweight='bold',
                              bbox=dict(boxstyle='round,pad=0.12', facecolor=color,
                                       edgecolor=edge_color, alpha=0.9), zorder=12)
@@ -690,7 +698,7 @@ class SimulationVisualizer:
             self.ax_lidar.set_theta_zero_location('E')
             self.ax_lidar.set_ylim(0, 16)
             self.ax_lidar.grid(True, alpha=0.4)
-            self.ax_lidar.set_title('LIDAR POLAR VIEW', fontsize=11, fontweight='bold')
+            self.ax_lidar.set_title('LIDAR POLAR VIEW', fontsize=11, fontweight='bold', pad=25)
             
             if self.lidar_history:
                 ranges, angles = self.lidar_history[-1]
@@ -753,7 +761,8 @@ class SimulationVisualizer:
                 'default': 'DEFAULT (Rule-based)',
                 'vfh': 'VFH (Vector Field Histogram)',
                 'dwa': 'DWA (Dynamic Window)',
-                'gapnav': 'GAPNAV (Gap + APF + DWA)'
+                'gapnav': 'GAPNAV (Gap + APF + DWA)',
+                'vo': 'VO (Velocity Obstacles)'
             }
             path_descriptions = {
                 'random': 'RANDOM',
@@ -811,6 +820,60 @@ class SimulationVisualizer:
                 self.ax_info.text(0.05, y_pos, line, ha='left', va='top',
                                  fontsize=7.5, family='monospace')
                 y_pos -= 0.12
+            
+            # === COLLISION / DANGER WARNING ===
+            # Calculate minimum distance to any obstacle (ground truth for accuracy)
+            min_distance = float('inf')
+            closest_obs_id = None
+            for idx, obs_gt in enumerate(gt_obstacles):
+                obs_center = np.array(obs_gt['center'])
+                obs_radius = obs_gt.get('radius', 0.3)
+                # Distance from AGV edge to obstacle edge
+                edge_distance = np.linalg.norm(agv_pos - obs_center) - ROBOT_RADIUS - obs_radius
+                if edge_distance < min_distance:
+                    min_distance = edge_distance
+                    closest_obs_id = idx + 1
+            
+            # Display warning based on distance thresholds
+            if min_distance < 0:
+                # COLLISION! (edges overlapping)
+                if not hasattr(self, 'collision_count'):
+                    self.collision_count = 0
+                self.collision_count += 1
+                warning_text = f"COLLISION! with Obstacle {closest_obs_id} (overlap: {-min_distance:.2f}m)"
+                warning_color = '#FF0000'
+                warning_bg = '#FFCCCC'
+                self.ax_info.text(0.5, 0.08, warning_text, ha='center', va='center',
+                                 fontsize=10, fontweight='bold', color=warning_color,
+                                 bbox=dict(boxstyle='round,pad=0.4', facecolor=warning_bg,
+                                          edgecolor=warning_color, linewidth=2))
+            elif min_distance < NAV_CRITICAL_DISTANCE - ROBOT_EFFECTIVE_RADIUS:
+                # DANGER zone (very close)
+                warning_text = f"DANGER! Obs {closest_obs_id} at {min_distance:.2f}m"
+                warning_color = '#FF6600'
+                warning_bg = '#FFE0CC'
+                self.ax_info.text(0.5, 0.08, warning_text, ha='center', va='center',
+                                 fontsize=9, fontweight='bold', color=warning_color,
+                                 bbox=dict(boxstyle='round,pad=0.3', facecolor=warning_bg,
+                                          edgecolor=warning_color, linewidth=1.5))
+            elif min_distance < NAV_SAFETY_DISTANCE - ROBOT_EFFECTIVE_RADIUS:
+                # WARNING zone (approaching)
+                warning_text = f"WARNING: Obs {closest_obs_id} at {min_distance:.2f}m"
+                warning_color = '#CC9900'
+                warning_bg = '#FFF5CC'
+                self.ax_info.text(0.5, 0.08, warning_text, ha='center', va='center',
+                                 fontsize=8, fontweight='bold', color=warning_color,
+                                 bbox=dict(boxstyle='round,pad=0.3', facecolor=warning_bg,
+                                          edgecolor=warning_color, linewidth=1))
+            else:
+                # Safe - show green status with box
+                warning_text = f"SAFE - Nearest: Obs {closest_obs_id} at {min_distance:.1f}m"
+                warning_color = '#228B22'
+                warning_bg = '#E8F5E9'
+                self.ax_info.text(0.5, 0.08, warning_text, ha='center', va='center',
+                                 fontsize=8, fontweight='bold', color=warning_color,
+                                 bbox=dict(boxstyle='round,pad=0.3', facecolor=warning_bg,
+                                          edgecolor=warning_color, linewidth=1))
     
     def run(self):
         """Starts the animation."""
@@ -864,6 +927,12 @@ def parse_arguments():
                optimization. Includes multi-layer recovery (wall-follow,
                reverse, random escape).
 
+    vo       - Velocity Obstacles (VO). Standalone algorithm for DYNAMIC
+               obstacle avoidance. Calculates Time-To-Collision (TTC) for
+               each moving obstacle and computes avoidance strategies:
+               pass behind (preferred), slow down, or emergency stop.
+               Best for scenarios with dynamic/moving obstacles.
+
   PATH MODES (--l3_path):
 
     random   - AGV wanders randomly, changing direction every 20-80 steps.
@@ -889,8 +958,9 @@ EXAMPLES:
   python simulation.py --l5_navigation gapnav --l3_path straight  # GapNav with goal
   python simulation.py --l3_scenario dynamic              # Dynamic obstacles only
   python simulation.py --l5_navigation gapnav --l3_scenario mixed # GapNav + mixed scenario
+  python simulation.py --l5_navigation vo --l3_scenario dynamic   # VO for dynamic obstacles
 
-NOTE: With --l5_navigation vfh/dwa/gapnav, the AGV is controlled by the
+NOTE: With --l5_navigation vfh/dwa/gapnav/vo, the AGV is controlled by the
       navigation algorithm. With --l3_path straight, the AGV has a fixed
       goal on the right side of the world.
 
@@ -901,10 +971,10 @@ AUTHOR: HySDG-ESD Project
     parser.add_argument(
         '--l5_navigation', 
         type=str, 
-        choices=['default', 'vfh', 'dwa', 'gapnav'],
+        choices=['default', 'vfh', 'dwa', 'gapnav', 'vo'],
         default='default',
         metavar='ALGORITHM',
-        help='L5 navigation algorithm: default, vfh, dwa, gapnav (default: default)'
+        help='L5 navigation algorithm: default, vfh, dwa, gapnav, vo (default: default)'
     )
     
     parser.add_argument(

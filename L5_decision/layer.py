@@ -33,7 +33,8 @@ from .algorithms import (
     SimpleDecisionMaker,
     DWADecisionMaker,
     VFHDecisionMaker,
-    GapNavDecisionMaker
+    GapNavDecisionMaker,
+    VODecisionMaker
 )
 
 from .config import NAV_SAFETY_DISTANCE
@@ -359,4 +360,90 @@ class GapNavDecisionLayer:
     def get_statistics(self) -> dict:
         stats = self.detector.get_statistics()
         stats["gapnav_recovery_mode"] = self.navigator.recovery_mode.value
+        return stats
+
+
+class VODecisionLayer:
+    """
+    Complete decision layer with Velocity Obstacles (VO) algorithm.
+    
+    Standalone algorithm for dynamic obstacle avoidance:
+    - Time-To-Collision (TTC) prediction
+    - Velocity Obstacles for collision avoidance
+    - Intelligent avoidance strategies (pass behind, slow down, stop)
+    
+    Best for scenarios with dynamic/moving obstacles.
+    """
+    
+    def __init__(self, dt: float = 0.1):
+        self.dt = dt
+        self.detector = L4DetectionLayer(dt)
+        self.navigator = VODecisionMaker()
+        self.goal_pos: Optional[np.ndarray] = None
+        self.current_vel = (0.0, 0.0)
+        
+    def set_goal(self, goal_pos: np.ndarray):
+        """Set navigation goal position."""
+        self.goal_pos = goal_pos.copy()
+        
+    def set_velocity(self, linear: float, angular: float):
+        """Set current robot velocities."""
+        self.current_vel = (linear, angular)
+        
+    def process_scan(self, ranges: np.ndarray, angles: np.ndarray,
+                     agv_pos: np.ndarray, agv_vel: np.ndarray,
+                     agv_heading: float) -> List[TrackedObstacle]:
+        """Process LiDAR scan and update tracker."""
+        return self.detector.process_scan(ranges, angles, agv_pos, agv_vel, agv_heading)
+    
+    def get_navigation_decision(self, agv_pos: np.ndarray,
+                                 agv_heading: float) -> NavigationDecision:
+        """Get VO-based navigation decision."""
+        return self.navigator.decide(
+            self.detector.get_obstacles(),
+            agv_pos,
+            agv_heading,
+            self.goal_pos,
+            self.current_vel
+        )
+    
+    def get_critical_obstacles(self, safety_distance: float = 2.0) -> List[TrackedObstacle]:
+        return self.detector.get_critical_obstacles(safety_distance)
+    
+    def get_all_obstacles(self) -> List[TrackedObstacle]:
+        return self.detector.get_obstacles()
+    
+    def get_active_threats(self):
+        """Get current collision threats from VO calculator."""
+        return self.navigator.get_active_threats()
+    
+    def get_avoidance_strategy(self) -> str:
+        """Get current avoidance strategy."""
+        return self.navigator.get_avoidance_strategy()
+    
+    def reset(self):
+        """Reset the decision layer."""
+        self.detector.reset()
+        self.navigator.reset()
+        self.current_vel = (0.0, 0.0)
+    
+    def export_state(self) -> List[dict]:
+        """Export complete state for analysis/debug."""
+        return [{
+            "id": obs.id,
+            "pos": obs.center.tolist(),
+            "vel": obs.velocity.tolist(),
+            "state": obs.state.value,
+            "d_eq": float(obs.d_eq),
+            "d_dot": float(obs.d_dot),
+            "confidence": float(obs.confidence),
+            "velocity_magnitude": float(np.linalg.norm(obs.velocity)),
+            "last_seen": int(obs.last_seen),
+            "num_points": len(obs.points)
+        } for obs in self.detector.get_obstacles()]
+    
+    def get_statistics(self) -> dict:
+        stats = self.detector.get_statistics()
+        stats["avoidance_strategy"] = self.navigator.get_avoidance_strategy()
+        stats["active_threats"] = len(self.navigator.get_active_threats())
         return stats
