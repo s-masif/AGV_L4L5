@@ -121,6 +121,9 @@ class GapNavDecisionMaker(BaseDecisionMaker):
         """
         Check if there's a clear direct path to the goal.
         
+        Uses a narrow corridor check - only obstacles that would actually
+        block the robot's path matter, not obstacles to the sides.
+        
         Args:
             obstacles: List of tracked obstacles
             agv_pos: AGV position
@@ -135,36 +138,43 @@ class GapNavDecisionMaker(BaseDecisionMaker):
         
         if not obstacles:
             return True, goal_dir, float('inf')
-            
-        # Check clearance in cone towards goal
-        cone_width = np.deg2rad(max(15, min(45, 300 / max(goal_dist, 1))))
+        
+        # Use a NARROW cone - only check obstacles directly in front toward goal
+        # The cone should be just wide enough to cover the robot's width
+        robot_angular_width = np.arctan2(ROBOT_EFFECTIVE_RADIUS, 2.0)  # ~15° at 2m
+        cone_half_width = max(np.deg2rad(10), robot_angular_width)  # minimum 10°
         
         min_clearance = float('inf')
+        blocking_obstacle = False
+        
         for obs in obstacles:
             rel_pos = obs.center - agv_pos
             obs_dist = np.linalg.norm(rel_pos)
             obs_angle = np.arctan2(rel_pos[1], rel_pos[0])
             
+            # Angle difference from goal direction
             angle_diff = abs(self.normalize_angle(obs_angle - goal_dir))
-            if angle_diff < cone_width:
-                clearance = obs_dist - ROBOT_EFFECTIVE_RADIUS
-                min_clearance = min(min_clearance, clearance)
+            
+            # Only consider obstacles in the narrow cone toward goal
+            if angle_diff < cone_half_width:
+                # Check if this obstacle is close enough to matter
+                # and would actually block the path
+                obs_radius = getattr(obs, 'radius', 0.3)
+                required_clearance = ROBOT_EFFECTIVE_RADIUS + obs_radius + 0.3  # safety margin
                 
-        # Check corridor sides
-        left_angle = goal_dir + np.deg2rad(15)
-        right_angle = goal_dir - np.deg2rad(15)
+                if obs_dist < required_clearance:
+                    blocking_obstacle = True
+                    min_clearance = 0
+                elif obs_dist < goal_dist:  # Only obstacles between us and goal
+                    clearance = obs_dist - required_clearance
+                    min_clearance = min(min_clearance, clearance)
+                    if clearance < DIRECT_PATH_MIN_CLEARANCE:
+                        blocking_obstacle = True
         
-        left_clearance = self.get_clearance_in_direction(obstacles, agv_pos, left_angle)
-        right_clearance = self.get_clearance_in_direction(obstacles, agv_pos, right_angle)
+        # Path is clear if no blocking obstacles found
+        is_clear = not blocking_obstacle and min_clearance > DIRECT_PATH_MIN_CLEARANCE
         
-        corridor_clear = min(left_clearance, right_clearance) > DIRECT_PATH_CORRIDOR_MARGIN
-        
-        goal_visible = min_clearance >= goal_dist
-        path_safe = min_clearance > DIRECT_PATH_MIN_CLEARANCE
-        
-        is_clear = (goal_visible or path_safe) and corridor_clear
-        
-        return is_clear, goal_dir, min(min_clearance, left_clearance, right_clearance)
+        return is_clear, goal_dir, min_clearance
     
     def go_straight_control(self,
                             agv_pos: np.ndarray,
@@ -479,8 +489,23 @@ class GapNavDecisionMaker(BaseDecisionMaker):
         w = self.rng.choice([-1, 1]) * self.max_angular * 0.8
         return v, w
     
-    def _update_recovery_state(self, need_recovery: bool, in_final_approach: bool):
-        """Update recovery state machine."""
+    def _update_recovery_state(self, need_recovery: bool, in_final_approach: bool, 
+                                path_is_clear: bool = False):
+        """Update recovery state machine.
+        
+        Args:
+            need_recovery: Whether stuck detection triggered
+            in_final_approach: If close to goal
+            path_is_clear: If direct path to goal is now clear (exit recovery immediately)
+        """
+        # EXIT RECOVERY IMMEDIATELY if direct path is now clear
+        if self.recovery_mode != RecoveryMode.NORMAL and path_is_clear:
+            self.recovery_mode = RecoveryMode.NORMAL
+            self.recovery_counter = 0
+            self.stuck_counter = 0
+            self.no_progress_counter = 0
+            return
+            
         if self.recovery_mode == RecoveryMode.NORMAL and need_recovery:
             self.recovery_mode = RecoveryMode.WALL_FOLLOW
             self.recovery_counter = 0
@@ -545,18 +570,25 @@ class GapNavDecisionMaker(BaseDecisionMaker):
         # Goal reached
         if goal_dist < effective_tolerance:
             return GapNavNavigationDecision(
-                action=NavigationAction.CONTINUE,
+                action=NavigationAction.STOP,
                 target_speed=0.0,
                 target_heading_change=0.0,
-                reason="Goal reached",
+                reason="Goal reached - stopped",
                 critical_obstacles=[],
                 safety_score=1.0,
-                recovery_mode=RecoveryMode.NORMAL
+                recovery_mode=RecoveryMode.NORMAL,
+                using_direct_path=False
             )
+        
+        # ALWAYS check direct path first - this is the key improvement
+        path_clear, path_dir, path_clearance = self.check_direct_path(
+            obstacles, agv_pos, agv_heading, goal
+        )
             
         # Stuck detection
         need_recovery = self.update_stuck_detection(agv_pos, goal_dist, goal_dir, agv_heading)
-        self._update_recovery_state(need_recovery, in_final_approach)
+        # Pass path_clear to allow immediate exit from recovery when path clears
+        self._update_recovery_state(need_recovery, in_final_approach, path_is_clear=path_clear)
         
         # Critical obstacles
         critical_obs = [obs.id for obs in obstacles 
@@ -575,13 +607,8 @@ class GapNavDecisionMaker(BaseDecisionMaker):
         best_w: float = 0.0
         reason: str = "Initializing"
         
-        # PRIORITY 1: Direct Path
-        if self.recovery_mode == RecoveryMode.NORMAL:
-            path_clear, path_dir, path_clearance = self.check_direct_path(
-                obstacles, agv_pos, agv_heading, goal
-            )
-            
-            if path_clear:
+        # PRIORITY 1: Direct Path (now checked for all modes, recovery exits if clear)
+        if self.recovery_mode == RecoveryMode.NORMAL and path_clear:
                 using_direct_path = True
                 best_v, best_w = self.go_straight_control(
                     agv_pos, agv_heading, goal, path_clearance

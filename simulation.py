@@ -222,15 +222,38 @@ class SimulationController:
         self.goal_reached = False
         self.goal_reached_time = None
         self.goal_reached_frame = None
+        self._frozen_nav_decision = None  # Reset cached decision
+        self._frozen_detected_obs = None  # Reset cached obstacles
+        self._frozen_static_count = 0
+        self._frozen_dynamic_count = 0
         
         # Reset decision layer
         self.decision.reset()
         
-        # If n_obstacles is set via CLI, use custom scenario
-        if self.n_obstacles is not None:
-            info = ScenarioPresets.scenario_custom(self.world, num_static=self.n_obstacles)
-            for i in range(self.n_obstacles):
-                self.ground_truth_states[i] = 'STATIC'
+        # Scenario 4 (empty) always overrides n_obstacles
+        if scenario == 4:
+            info = ScenarioPresets.scenario_empty(self.world)
+            # No obstacles, no ground truth
+        # If n_obstacles is set via CLI, use custom scenario based on scenario type
+        elif self.n_obstacles is not None:
+            import math
+            if scenario == 3:  # mixed scenario with custom count
+                # 1/3 dynamic (ceiling), rest static
+                num_dynamic = math.ceil(self.n_obstacles / 3)
+                num_static = self.n_obstacles - num_dynamic
+                info = ScenarioPresets.scenario_custom(self.world, num_static=num_static, num_dynamic=num_dynamic)
+                for i in range(num_static):
+                    self.ground_truth_states[i] = 'STATIC'
+                for i in range(num_static, self.n_obstacles):
+                    self.ground_truth_states[i] = 'DYNAMIC'
+            elif scenario == 2:  # dynamic scenario with custom count
+                info = ScenarioPresets.scenario_custom(self.world, num_static=0, num_dynamic=self.n_obstacles)
+                for i in range(self.n_obstacles):
+                    self.ground_truth_states[i] = 'DYNAMIC'
+            else:  # static or default scenario with custom count
+                info = ScenarioPresets.scenario_custom(self.world, num_static=self.n_obstacles)
+                for i in range(self.n_obstacles):
+                    self.ground_truth_states[i] = 'STATIC'
         elif scenario == 1:
             info = ScenarioPresets.scenario_static_only(self.world)
             for i in range(100):
@@ -245,9 +268,6 @@ class SimulationController:
                 self.ground_truth_states[i] = 'STATIC'
             for i in range(50, 100):
                 self.ground_truth_states[i] = 'DYNAMIC'
-        elif scenario == 4:
-            info = ScenarioPresets.scenario_empty(self.world)
-            # No obstacles, no ground truth
         
         print(f"\n{'='*60}")
         print(f"Scenario {scenario} initialized")
@@ -267,6 +287,24 @@ class SimulationController:
             agv_pos = agv_state['position']
             agv_heading = agv_state['heading']
             
+            # Get ground truth obstacles from world (frozen state)
+            gt_obstacles = self.world._get_all_obstacles()
+            
+            # Count static/dynamic from last known detected obstacles
+            detected_obs = self.decision.get_all_obstacles() if hasattr(self.decision, 'get_all_obstacles') else []
+            static_count = sum(1 for o in detected_obs if o.state.value == 'STATIC')
+            dynamic_count = sum(1 for o in detected_obs if o.state.value == 'DYNAMIC')
+            
+            # Use cached frozen decision (don't call decision layer again)
+            if not hasattr(self, '_frozen_nav_decision') or self._frozen_nav_decision is None:
+                self._frozen_nav_decision = self.decision.get_navigation_decision(agv_pos, agv_heading)
+            
+            # Cache detected obstacles too
+            if not hasattr(self, '_frozen_detected_obs') or self._frozen_detected_obs is None:
+                self._frozen_detected_obs = detected_obs
+                self._frozen_static_count = static_count
+                self._frozen_dynamic_count = dynamic_count
+            
             return {
                 'frame': self.goal_reached_frame,
                 'time': self.goal_reached_time,
@@ -275,11 +313,11 @@ class SimulationController:
                 'agv_heading': agv_heading,
                 'lidar_ranges': np.array([]),
                 'lidar_angles': np.array([]),
-                'detected_obstacles': self.decision.get_all_obstacles() if hasattr(self.decision, 'get_all_obstacles') else [],
-                'nav_decision': self.decision.get_navigation_decision(agv_pos, agv_heading),
-                'static_count': 0,
-                'dynamic_count': 0,
-                'ground_truth_obstacles': [],
+                'detected_obstacles': self._frozen_detected_obs,
+                'nav_decision': self._frozen_nav_decision,
+                'static_count': self._frozen_static_count,
+                'dynamic_count': self._frozen_dynamic_count,
+                'ground_truth_obstacles': gt_obstacles,
                 'goal_reached': True
             }
         
@@ -460,13 +498,18 @@ class SimulationVisualizer:
         self.goal_reached_drawn = False  # Track if goal reached state has been drawn
         
         # Setup figure
-        self.fig = plt.figure(figsize=(16, 10))
-        gs = self.fig.add_gridspec(3, 3, hspace=0.35, wspace=0.25,
-                                   left=0.06, right=0.97, top=0.95, bottom=0.08)
+        self.fig = plt.figure(figsize=(18, 10))
+        gs = self.fig.add_gridspec(3, 4, hspace=0.30, wspace=0.30,
+                                   left=0.05, right=0.97, top=0.94, bottom=0.12,
+                                   height_ratios=[1, 1, 0.4], width_ratios=[1.2, 1.2, 1, 1])
         
+        # Main view: left 2 columns, top 2 rows
         self.ax_main = self.fig.add_subplot(gs[:2, :2])
-        self.ax_lidar = self.fig.add_subplot(gs[0, 2], projection='polar')
-        self.ax_deq = self.fig.add_subplot(gs[1, 2])
+        # LiDAR polar: top right
+        self.ax_lidar = self.fig.add_subplot(gs[0, 2:], projection='polar')
+        # Metrics: middle right
+        self.ax_deq = self.fig.add_subplot(gs[1, 2:])
+        # Info panel: bottom row spanning all columns
         self.ax_info = self.fig.add_subplot(gs[2, :])
         
         # Buttons
@@ -591,12 +634,16 @@ class SimulationVisualizer:
                     self.ax_main.plot([agv_pos[0], goal_pos[0]], [agv_pos[1], goal_pos[1]],
                                      'r:', alpha=0.3, linewidth=1.5, zorder=3)
         
-        # Ground truth obstacles
-        for obs_gt in data['ground_truth_obstacles']:
+        # Ground truth obstacles (with permanent ID labels)
+        for idx, obs_gt in enumerate(data['ground_truth_obstacles']):
             center = obs_gt['center']
             radius = obs_gt.get('radius', 0.3)
             self.ax_main.add_patch(Circle(center, radius, fc='lightgray', 
                                          ec='gray', lw=1, alpha=0.3, zorder=2))
+            # Permanent ID number on ground truth (always visible)
+            self.ax_main.text(center[0], center[1], str(idx + 1),
+                             ha='center', va='center', fontsize=8, fontweight='bold',
+                             color='dimgray', alpha=0.7, zorder=3)
         
         # Detected obstacles
         for obs in detected:
@@ -621,18 +668,18 @@ class SimulationVisualizer:
                                   fc='purple', ec='indigo', lw=2, alpha=0.8, zorder=9)
                 self.ax_main.add_patch(arrow)
             
-            # Label
-            vel_norm = np.linalg.norm(obs.velocity)
-            label = f'ID:{obs.id}\n{state_str[:3]}\nv:{vel_norm:.2f}'
-            self.ax_main.text(obs.center[0], obs.center[1] + 0.7, label,
-                             ha='center', va='bottom', fontsize=7.5,
-                             bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
-                                      edgecolor=edge_color, alpha=0.95), zorder=12)
+            # State label above detected obstacle (S/D indicator)
+            state_abbrev = 'S' if state_str == 'STATIC' else 'D'
+            self.ax_main.text(obs.center[0], obs.center[1] + 0.5, state_abbrev,
+                             ha='center', va='bottom', fontsize=7, fontweight='bold',
+                             bbox=dict(boxstyle='round,pad=0.12', facecolor=color,
+                                      edgecolor=edge_color, alpha=0.9), zorder=12)
         
         # Title con info navigazione
         action_str = nav_decision.action.value
+        goal_suffix = ' ✓ GOAL REACHED' if goal_reached else ''
         self.ax_main.set_title(
-            f'AGV Simulation | Scenario {self.controller.current_scenario} | Frame {frame}\n'
+            f'AGV Simulation | Scenario {self.controller.current_scenario} | Frame {display_frame}{goal_suffix}\n'
             f'Time: {current_time:.1f}s | Action: {action_str} | '
             f'Detected: {len(detected)} (S:{static_count} D:{dynamic_count})',
             fontsize=10, fontweight='bold')
@@ -675,14 +722,20 @@ class SimulationVisualizer:
                 self.ax_deq.set_title('Distance Metrics', fontsize=10, fontweight='bold')
             self.ax_deq.grid(True, alpha=0.35)
             
+            # Get IDs of currently visible obstacles
+            visible_obs_ids = {obs.id for obs in detected}
+            
             times_list = list(self.controller.time_data)
             for obs_id, values_deque in self.controller.deq_data.items():
+                # Only show metrics for currently visible obstacles
+                if obs_id not in visible_obs_ids:
+                    continue
                 values = list(values_deque)
                 if values:
                     times = times_list[-len(values):]
                     self.ax_deq.plot(times, values, '-', label=f'Obs {obs_id}', linewidth=1.5)
             
-            if self.controller.deq_data:
+            if self.controller.deq_data and visible_obs_ids:
                 self.ax_deq.legend(loc='upper right', fontsize=7, ncol=2)
             
             self.ax_deq.set_xlim(max(0, current_time - 10), max(10, current_time))
@@ -728,6 +781,12 @@ class SimulationVisualizer:
             # Stats
             stats = self.controller.decision.get_statistics()
             
+            # Ground truth obstacle counts
+            gt_obstacles = data['ground_truth_obstacles']
+            gt_static = sum(1 for obs in gt_obstacles if obs.get('type') == 'static')
+            gt_dynamic = sum(1 for obs in gt_obstacles if obs.get('type') == 'dynamic')
+            gt_total = len(gt_obstacles)
+            
             # Goal info for straight mode
             goal_info = ""
             if self.controller.path_mode == 'straight' and self.controller.world.goal_pos is not None:
@@ -741,9 +800,9 @@ class SimulationVisualizer:
             info_lines = [
                 f"Time: {current_time:.1f}s  |  Frame: {display_frame}/{self.controller.steps}",
                 f"AGV: ({agv_pos[0]:.1f}, {agv_pos[1]:.1f}) | V={np.linalg.norm(agv_vel):.2f}m/s{goal_info}",
-                f"Heading: {np.rad2deg(agv_heading):.1f}°",
-                f"Navigation: {nav_decision.action.value} | Safety: {nav_decision.safety_score:.2f}",
-                f"Total: {stats['total_obstacles']} | Static: {stats['static_count']} | Dynamic: {stats['dynamic_count']}",
+                f"Heading: {np.rad2deg(agv_heading):.1f}°  |  Navigation: {nav_decision.action.value} | Safety: {nav_decision.safety_score:.2f}",
+                f"Ground Truth Obstacles: {gt_total} (Static: {gt_static}, Dynamic: {gt_dynamic})",
+                f"Detected: {stats['total_obstacles']} | Static: {stats['static_count']} | Dynamic: {stats['dynamic_count']}",
                 f"Reason: {nav_decision.reason}"
             ]
             
@@ -861,9 +920,9 @@ AUTHOR: HySDG-ESD Project
         '--l3_scenario',
         type=str,
         choices=['static', 'dynamic', 'mixed'],
-        default='static',
+        default='mixed',
         metavar='TYPE',
-        help='L3 obstacle scenario: static, dynamic, mixed (default: static)'
+        help='L3 obstacle scenario: static, dynamic, mixed (default: mixed)'
     )
     
     parser.add_argument(

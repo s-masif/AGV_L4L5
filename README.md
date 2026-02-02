@@ -96,8 +96,8 @@ python simulation.py --help
 |----------|--------|-------------|
 | `--l5_navigation` | `default`, `vfh`, `dwa`, `gapnav` | Navigation algorithm |
 | `--l3_path` | `random`, `straight` | AGV path mode |
-| `--l3_scenario` | `static`, `dynamic`, `mixed` | Obstacle scenario |
-| `--l3_obstacles` | int | Number of static obstacles (overrides scenario) |
+| `--l3_scenario` | `static`, `dynamic`, `mixed` | Obstacle scenario (default: mixed) |
+| `--l3_obstacles` | int | Total number of obstacles (overrides scenario defaults). For `mixed`: 1/3 dynamic, 2/3 static |
 | `--speed` | `normal`, `fast`, `very_fast` | Animation speed (1x, 10x, 100x) |
 | `--dt` | float | Simulation time step (default: 0.1s) |
 | `--steps` | int | Maximum simulation steps (default: 600) |
@@ -105,23 +105,26 @@ python simulation.py --help
 ### Examples
 
 ```bash
-# Random wandering with default navigation
+# Random wandering with default navigation (mixed obstacles by default)
 python simulation.py
 
-# Navigate from left to right with GapNav
+# Navigate from left to right with GapNav (mixed obstacles by default)
 python simulation.py --l5_navigation gapnav --l3_path straight
 
-# VFH navigation with dynamic obstacles
+# VFH navigation with dynamic obstacles only
 python simulation.py --l5_navigation vfh --l3_scenario dynamic --l3_path straight
 
-# DWA navigation with mixed obstacles and straight path
-python simulation.py --l5_navigation dwa --l3_path straight --l3_scenario mixed
+# DWA navigation with static obstacles only
+python simulation.py --l5_navigation dwa --l3_path straight --l3_scenario static
 
 # Empty scenario (no obstacles) with fast animation
 python simulation.py --l3_path straight --l5_navigation vfh --l3_obstacles 0 --speed fast
 
-# Custom number of obstacles with very fast animation
-python simulation.py --l3_path straight --l5_navigation gapnav --l3_obstacles 10 --speed very_fast
+# Custom 15 obstacles with mixed scenario (5 dynamic + 10 static)
+python simulation.py --l3_path straight --l5_navigation gapnav --l3_obstacles 15
+
+# Custom 12 dynamic obstacles only
+python simulation.py --l5_navigation gapnav --l3_path straight --l3_scenario dynamic --l3_obstacles 12
 ```
 
 ---
@@ -130,9 +133,9 @@ python simulation.py --l3_path straight --l5_navigation gapnav --l3_obstacles 10
 
 | Scenario | Description |
 |----------|-------------|
-| `static` | Only static obstacles (default) |
+| `static` | Only static obstacles |
 | `dynamic` | Only moving obstacles that bounce off walls |
-| `mixed` | Both static and dynamic obstacles |
+| `mixed` | Both static and dynamic obstacles (default). With `--l3_obstacles N`: 1/3 dynamic (ceiling), 2/3 static |
 
 ---
 

@@ -28,7 +28,7 @@ from .config import (
     SCENARIO_2_OBS3_POS_Y_RANGE,
     SCENARIO_2_OBS3_VEL_X_RANGE,
     SCENARIO_2_OBS3_VEL_Y_RANGE,
-    SCENARIO_3_NUM_STATIC_OBSTACLES,
+    SCENARIO_3_TOTAL_OBSTACLES,
     SCENARIO_3_STATIC_X_RANGE,
     SCENARIO_3_STATIC_Y_RANGE
 )
@@ -278,41 +278,37 @@ class ScenarioPresets:
     
     @staticmethod
     def scenario_mixed(world: WorldModel):
+        import math
         world.clear_obstacles()
         
+        # Calculate 1/3 dynamic (ceiling), rest static
+        total = SCENARIO_3_TOTAL_OBSTACLES
+        num_dynamic = math.ceil(total / 3)
+        num_static = total - num_dynamic
+        
         static_obs = ObstacleGenerator.generate_random_static_obstacles(
-            num_obstacles=SCENARIO_3_NUM_STATIC_OBSTACLES,
+            num_obstacles=num_static,
             x_range=SCENARIO_3_STATIC_X_RANGE,
             y_range=SCENARIO_3_STATIC_Y_RANGE
         )
         world.add_static_obstacles(static_obs)
         
-        obs1 = ObstacleGenerator.create_dynamic_obstacle(
-            position=np.array([
-                np.random.uniform(*SCENARIO_2_OBS1_POS_X_RANGE), 
-                np.random.uniform(*SCENARIO_2_OBS1_POS_Y_RANGE)
-            ]),
-            velocity=np.array([
-                np.random.uniform(*SCENARIO_2_OBS1_VEL_X_RANGE), 
-                np.random.uniform(*SCENARIO_2_OBS1_VEL_Y_RANGE)
-            ])
-        )
-        world.add_dynamic_obstacle(obs1)
-        
-        obs2 = ObstacleGenerator.create_dynamic_obstacle(
-            position=np.array([
-                np.random.uniform(*SCENARIO_2_OBS2_POS_X_RANGE), 
-                np.random.uniform(*SCENARIO_2_OBS2_POS_Y_RANGE)
-            ]),
-            velocity=np.array([
-                np.random.uniform(*SCENARIO_2_OBS2_VEL_X_RANGE), 
-                np.random.uniform(*SCENARIO_2_OBS2_VEL_Y_RANGE)
-            ])
-        )
-        world.add_dynamic_obstacle(obs2)
+        # Generate random dynamic obstacles
+        for _ in range(num_dynamic):
+            dyn_obs = ObstacleGenerator.create_dynamic_obstacle(
+                position=np.array([
+                    np.random.uniform(5, 25),
+                    np.random.uniform(-8, 8)
+                ]),
+                velocity=np.array([
+                    np.random.uniform(-0.8, 0.8),
+                    np.random.uniform(-0.8, 0.8)
+                ])
+            )
+            world.add_dynamic_obstacle(dyn_obs)
         
         world.reset()
-        return {'type': 'mixed', 'num_static': len(static_obs), 'num_dynamic': 2}
+        return {'type': 'mixed', 'num_static': num_static, 'num_dynamic': num_dynamic}
 
     @staticmethod
     def scenario_empty(world: WorldModel):
@@ -333,6 +329,21 @@ class ScenarioPresets:
                 y_range=SCENARIO_1_Y_RANGE
             )
             world.add_static_obstacles(static_obs)
+        
+        # Generate random dynamic obstacles
+        if num_dynamic > 0:
+            for _ in range(num_dynamic):
+                dyn_obs = ObstacleGenerator.create_dynamic_obstacle(
+                    position=np.array([
+                        np.random.uniform(5, 25),
+                        np.random.uniform(-8, 8)
+                    ]),
+                    velocity=np.array([
+                        np.random.uniform(-0.8, 0.8),
+                        np.random.uniform(-0.8, 0.8)
+                    ])
+                )
+                world.add_dynamic_obstacle(dyn_obs)
         
         world.reset()
         return {'type': 'custom', 'num_static': num_static, 'num_dynamic': num_dynamic}

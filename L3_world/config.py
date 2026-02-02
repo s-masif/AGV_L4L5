@@ -93,7 +93,7 @@ SCENARIO_2_OBS3_VEL_X_RANGE = (0.6, 1.2)
 SCENARIO_2_OBS3_VEL_Y_RANGE = (0.6, 1.2)
 
 # --- Scenario 3: Mixed static + dynamic ---
-SCENARIO_3_NUM_STATIC_OBSTACLES = 5
+SCENARIO_3_TOTAL_OBSTACLES = 9  # Total obstacles (1/3 dynamic, 2/3 static)
 SCENARIO_3_STATIC_X_RANGE = (8, 25)
 SCENARIO_3_STATIC_Y_RANGE = (-5, 5)
 
