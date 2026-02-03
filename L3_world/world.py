@@ -5,7 +5,8 @@
 import numpy as np
 from typing import List, Tuple
 from collections import deque
-
+# Add this import line with the others
+from .fusion import SimpleSensorFusion  # New import for sensor fusion
 from .config import (
     WORLD_BOUNDS,
     DEFAULT_DT,
@@ -28,7 +29,7 @@ from .config import (
     SCENARIO_2_OBS3_POS_Y_RANGE,
     SCENARIO_2_OBS3_VEL_X_RANGE,
     SCENARIO_2_OBS3_VEL_Y_RANGE,
-    SCENARIO_3_TOTAL_OBSTACLES,
+    SCENARIO_3_NUM_STATIC_OBSTACLES,
     SCENARIO_3_STATIC_X_RANGE,
     SCENARIO_3_STATIC_Y_RANGE
 )
@@ -45,12 +46,13 @@ class WorldModel:
     """
     
     def __init__(self, dt: float = DEFAULT_DT, 
-                 world_bounds: tuple = WORLD_BOUNDS,
-                 agv_start_pos: np.ndarray = None,
-                 agv_speed: float = DEFAULT_AGV_SPEED,
-                 controlled_mode: bool = False,
-                 path_mode: str = 'random',
-                 goal_pos: np.ndarray = None):
+                    world_bounds: tuple = WORLD_BOUNDS,
+                    agv_start_pos: np.ndarray = None,
+                    agv_speed: float = DEFAULT_AGV_SPEED,
+                    controlled_mode: bool = False,
+                    path_mode: str = 'random',
+                    goal_pos: np.ndarray = None,
+                    enable_fusion: bool = True):  # NEW: Add this parameter
         """
         Initialize the simulation world.
         
@@ -81,7 +83,13 @@ class WorldModel:
         
         self.agv_start_pos = agv_start_pos.copy()
         self.goal_pos = goal_pos.copy() if goal_pos is not None else None
+        self.enable_fusion = enable_fusion  # NEW: Store fusion setting
         
+        # Initialize sensor fusion
+        if enable_fusion:
+            self.sensor_fusion = SimpleSensorFusion()
+        else:
+            self.sensor_fusion = None
         self.agv = self._create_agv(agv_start_pos, goal_pos)
         self.lidar = LidarSimulator()
         
@@ -90,6 +98,7 @@ class WorldModel:
         
         self.agv_trajectory = deque(maxlen=AGV_TRAJECTORY_MAX_LENGTH)
         self.lidar_history = deque(maxlen=LIDAR_HISTORY_MAX_LENGTH)
+        self.fusion_history = deque(maxlen=LIDAR_HISTORY_MAX_LENGTH)
         self.current_time = 0.0
         self.current_frame = 0
     
@@ -110,6 +119,8 @@ class WorldModel:
     def clear_obstacles(self):
         self.static_obstacles.clear()
         self.dynamic_obstacles.clear()
+        if self.sensor_fusion:  # NEW: Clear fusion tracks too
+            self.sensor_fusion.clear_tracks()
     
     def reset(self, agv_start_pos: np.ndarray = None):
         if agv_start_pos is None:
@@ -117,8 +128,12 @@ class WorldModel:
         
         self.agv = self._create_agv(agv_start_pos, self.goal_pos)
         
+        if self.sensor_fusion:  # NEW: Reset fusion tracks
+            self.sensor_fusion.clear_tracks()
+        
         self.agv_trajectory.clear()
         self.lidar_history.clear()
+        self.fusion_history.clear()  # NEW: Clear fusion history
         self.current_time = 0.0
         self.current_frame = 0
     
@@ -155,6 +170,13 @@ class WorldModel:
         # Get goal_reached from AGV state
         agv_state = self.agv.get_state()
         goal_reached = agv_state.get('goal_reached', False)
+
+        fused_obstacles = []
+        if self.sensor_fusion:
+            fused_obstacles = self.sensor_fusion.update(
+                ranges, angles, agv_pos, agv_heading
+            )
+            self.fusion_history.append(fused_obstacles.copy())
         
         return {
             'agv_pos': agv_pos,
@@ -163,6 +185,7 @@ class WorldModel:
             'lidar_ranges': ranges,
             'lidar_angles': angles,
             'obstacles': all_obstacles,
+            'fused_obstacles': fused_obstacles,  # NEW: fused estimates
             'time': self.current_time,
             'frame': self.current_frame,
             'goal_reached': goal_reached
@@ -216,6 +239,24 @@ class WorldModel:
         if self.lidar_history:
             return self.lidar_history[-1]
         return None, None
+    
+    def get_fused_data(self) -> List[dict]:
+        """Get the latest fused obstacle estimates."""
+        if self.fusion_history:
+            return self.fusion_history[-1]
+        return []
+    
+    def toggle_fusion(self, enable: bool = None):
+        """Toggle sensor fusion on/off."""
+        if enable is None:
+            self.enable_fusion = not self.enable_fusion
+        else:
+            self.enable_fusion = enable
+        
+        if self.enable_fusion and self.sensor_fusion is None:
+            self.sensor_fusion = SimpleSensorFusion()
+        elif not self.enable_fusion:
+            self.sensor_fusion = None
 
 
 class ScenarioPresets:
@@ -278,37 +319,41 @@ class ScenarioPresets:
     
     @staticmethod
     def scenario_mixed(world: WorldModel):
-        import math
         world.clear_obstacles()
         
-        # Calculate 1/3 dynamic (ceiling), rest static
-        total = SCENARIO_3_TOTAL_OBSTACLES
-        num_dynamic = math.ceil(total / 3)
-        num_static = total - num_dynamic
-        
         static_obs = ObstacleGenerator.generate_random_static_obstacles(
-            num_obstacles=num_static,
+            num_obstacles=SCENARIO_3_NUM_STATIC_OBSTACLES,
             x_range=SCENARIO_3_STATIC_X_RANGE,
             y_range=SCENARIO_3_STATIC_Y_RANGE
         )
         world.add_static_obstacles(static_obs)
         
-        # Generate random dynamic obstacles
-        for _ in range(num_dynamic):
-            dyn_obs = ObstacleGenerator.create_dynamic_obstacle(
-                position=np.array([
-                    np.random.uniform(5, 25),
-                    np.random.uniform(-8, 8)
-                ]),
-                velocity=np.array([
-                    np.random.uniform(-0.8, 0.8),
-                    np.random.uniform(-0.8, 0.8)
-                ])
-            )
-            world.add_dynamic_obstacle(dyn_obs)
+        obs1 = ObstacleGenerator.create_dynamic_obstacle(
+            position=np.array([
+                np.random.uniform(*SCENARIO_2_OBS1_POS_X_RANGE), 
+                np.random.uniform(*SCENARIO_2_OBS1_POS_Y_RANGE)
+            ]),
+            velocity=np.array([
+                np.random.uniform(*SCENARIO_2_OBS1_VEL_X_RANGE), 
+                np.random.uniform(*SCENARIO_2_OBS1_VEL_Y_RANGE)
+            ])
+        )
+        world.add_dynamic_obstacle(obs1)
+        
+        obs2 = ObstacleGenerator.create_dynamic_obstacle(
+            position=np.array([
+                np.random.uniform(*SCENARIO_2_OBS2_POS_X_RANGE), 
+                np.random.uniform(*SCENARIO_2_OBS2_POS_Y_RANGE)
+            ]),
+            velocity=np.array([
+                np.random.uniform(*SCENARIO_2_OBS2_VEL_X_RANGE), 
+                np.random.uniform(*SCENARIO_2_OBS2_VEL_Y_RANGE)
+            ])
+        )
+        world.add_dynamic_obstacle(obs2)
         
         world.reset()
-        return {'type': 'mixed', 'num_static': num_static, 'num_dynamic': num_dynamic}
+        return {'type': 'mixed', 'num_static': len(static_obs), 'num_dynamic': 2}
 
     @staticmethod
     def scenario_empty(world: WorldModel):
@@ -329,21 +374,6 @@ class ScenarioPresets:
                 y_range=SCENARIO_1_Y_RANGE
             )
             world.add_static_obstacles(static_obs)
-        
-        # Generate random dynamic obstacles
-        if num_dynamic > 0:
-            for _ in range(num_dynamic):
-                dyn_obs = ObstacleGenerator.create_dynamic_obstacle(
-                    position=np.array([
-                        np.random.uniform(5, 25),
-                        np.random.uniform(-8, 8)
-                    ]),
-                    velocity=np.array([
-                        np.random.uniform(-0.8, 0.8),
-                        np.random.uniform(-0.8, 0.8)
-                    ])
-                )
-                world.add_dynamic_obstacle(dyn_obs)
         
         world.reset()
         return {'type': 'custom', 'num_static': num_static, 'num_dynamic': num_dynamic}
