@@ -32,6 +32,7 @@ class LidarPoint:
     distance: float   # Distance from sensor (meters)
     x: float          # X coordinate in AGV frame
     y: float          # Y coordinate in AGV frame
+    
 
 
 @dataclass 
@@ -66,3 +67,4 @@ class TrackedObstacle:
     last_seen: int                      # Last frame seen
     state_history: List[ObstacleState] = field(default_factory=list)
     velocity_history: List[float] = field(default_factory=list)
+    fused_score: float = 0.0  # Add this line

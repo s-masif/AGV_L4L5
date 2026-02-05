@@ -85,6 +85,9 @@ class SimpleDecisionMaker(BaseDecisionMaker):
         Returns:
             NavigationDecision with action and parameters
         """
+
+        obstacles = self.get_fused_obstacles(obstacles)
+
         # No obstacles: full speed ahead
         if not obstacles:
             return NavigationDecision(

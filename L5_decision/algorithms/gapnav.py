@@ -551,6 +551,9 @@ class GapNavDecisionMaker(BaseDecisionMaker):
         2. Gap-based navigation with APF
         3. Recovery modes (wall-follow → reverse → random)
         """
+
+        obstacles = self.get_fused_obstacles(obstacles)
+        
         if current_vel is not None:
             self.current_v, self.current_w = current_vel
             

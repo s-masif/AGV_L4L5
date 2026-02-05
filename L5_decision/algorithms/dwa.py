@@ -187,6 +187,9 @@ class DWADecisionMaker(BaseDecisionMaker):
             DWANavigationDecision with action and parameters
         """
         # Update current velocities
+
+        obstacles = self.get_fused_obstacles(obstacles)
+        
         if current_vel is not None:
             self.current_v, self.current_w = current_vel
             

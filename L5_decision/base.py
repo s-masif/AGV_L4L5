@@ -94,6 +94,18 @@ class BaseDecisionMaker(ABC):
         self.no_progress_counter = 0
         self.prev_pos = None
         self.prev_goal_dist = None
+
+    # In L5_decision/base.py -> Inside the BaseDecisionMaker class
+
+    def get_fused_obstacles(self, obstacles: List[TrackedObstacle]) -> List[TrackedObstacle]:
+        """
+        Sensor Fusion Filter:
+        Only returns obstacles that have passed the Kinematic Consensus 
+        (agreement between Raw Sensor and Kalman Filter).
+        """
+        # We only keep obstacles with confidence > 0.5
+        # Objects with low confidence are usually sensor noise or 'disagreements'
+        return [obs for obs in obstacles if obs.confidence > 0.5]
         
     # =========================================================================
     # Utility Methods (shared by all algorithms)

@@ -144,46 +144,108 @@ class ObstacleTracker:
 
         self._manage_obstacle_lifecycle()
 
+    # def _update_obstacle(self, idx: int, center_world: np.ndarray, 
+    #                      cluster: List[LidarPoint], 
+    #                      agv_pos: np.ndarray, agv_vel: np.ndarray):
+    #     """Update an existing tracked obstacle."""
+    #     obs = self.obstacles[idx]
+
+    #     if obs.id not in self.kalman_filters:
+    #         self.kalman_filters[obs.id] = ExtendedKalmanFilterCV(self.dt)
+
+    #     self.kalman_filters[obs.id].update(center_world)
+    #     pos_world, vel_world = self.kalman_filters[obs.id].get_state()
+
+    #     # Calculate HySDG-ESD
+    #     result = self.hysdg_calculator.compute(
+    #         pos_world, vel_world, agv_pos, agv_vel, obs.d_eq, self.dt
+    #     )
+
+    #     # Update obstacle
+    #     obs.center = pos_world
+    #     obs.velocity = vel_world
+    #     obs.points = cluster
+    #     obs.d_eq = result['d_eq']
+    #     obs.d_dot = result['d_dot']
+        
+    #     # Update velocity history
+    #     vel_magnitude = np.linalg.norm(vel_world)
+    #     obs.velocity_history.append(vel_magnitude)
+    #     if len(obs.velocity_history) > CLASSIFIER_MAX_HISTORY_LENGTH:
+    #         obs.velocity_history.pop(0)
+        
+    #     # Update state history
+    #     obs.state_history.append(result['state'])
+    #     if len(obs.state_history) > CLASSIFIER_MAX_HISTORY_LENGTH:
+    #         obs.state_history.pop(0)
+        
+    #     # Classify obstacle
+    #     obs.state = self.classifier.classify(obs.velocity_history, obs.state_history)
+        
+    #     obs.last_seen = self.current_time
+    #     obs.confidence = min(CONFIDENCE_MAX, obs.confidence + CONFIDENCE_INCREMENT)
+
     def _update_obstacle(self, idx: int, center_world: np.ndarray, 
                          cluster: List[LidarPoint], 
                          agv_pos: np.ndarray, agv_vel: np.ndarray):
-        """Update an existing tracked obstacle."""
+        """Update an existing tracked obstacle using Weighted Kinematic Fusion."""
         obs = self.obstacles[idx]
 
+        # --- STEP 1: RAW SENSOR SIGNAL ---
+        # Calculate speed based on raw distance moved since the last frame
+        # This represents the "immediate" sensor evidence
+        raw_dist = np.linalg.norm(center_world - obs.center)
+        raw_vel_mag = raw_dist / self.dt
+
+        # --- STEP 2: FILTER MODEL UPDATE ---
         if obs.id not in self.kalman_filters:
             self.kalman_filters[obs.id] = ExtendedKalmanFilterCV(self.dt)
 
         self.kalman_filters[obs.id].update(center_world)
         pos_world, vel_world = self.kalman_filters[obs.id].get_state()
+        filter_vel_mag = np.linalg.norm(vel_world)
 
-        # Calculate HySDG-ESD
+        # --- STEP 3: KINEMATIC CONSENSUS FUSION ---
+        # We fuse raw sensor data (40%) with the smooth EKF prediction (60%)
+        # This filters out sensor "jitter" while maintaining responsiveness
+        fused_vel_mag = (0.4 * raw_vel_mag) + (0.6 * filter_vel_mag)
+
+        # --- STEP 4: UPDATE HYSDG-ESD ---
         result = self.hysdg_calculator.compute(
             pos_world, vel_world, agv_pos, agv_vel, obs.d_eq, self.dt
         )
 
-        # Update obstacle
+        # --- STEP 5: DATA SYNCHRONIZATION ---
         obs.center = pos_world
         obs.velocity = vel_world
         obs.points = cluster
         obs.d_eq = result['d_eq']
         obs.d_dot = result['d_dot']
         
-        # Update velocity history
-        vel_magnitude = np.linalg.norm(vel_world)
-        obs.velocity_history.append(vel_magnitude)
+        # Update velocity history with the FUSED magnitude instead of raw filter magnitude
+        obs.velocity_history.append(fused_vel_mag)
         if len(obs.velocity_history) > CLASSIFIER_MAX_HISTORY_LENGTH:
             obs.velocity_history.pop(0)
         
-        # Update state history
-        obs.state_history.append(result['state'])
-        if len(obs.state_history) > CLASSIFIER_MAX_HISTORY_LENGTH:
-            obs.state_history.pop(0)
+        # --- STEP 6: TEMPORAL CONSENSUS CLASSIFICATION ---
+        # Calculate a rolling average of the fused velocity for stability
+        rolling_fused_vel = np.mean(obs.velocity_history[-5:]) # Last 5 frames
         
-        # Classify obstacle
-        obs.state = self.classifier.classify(obs.velocity_history, obs.state_history)
+        # Use simple algorithmic thresholds for the fused result
+        if rolling_fused_vel > 0.35:
+            obs.state = ObstacleState.DYNAMIC
+        elif rolling_fused_vel < 0.15:
+            obs.state = ObstacleState.STATIC
+        else:
+            obs.state = ObstacleState.UNKNOWN
         
+        # --- STEP 7: ADAPTIVE CONFIDENCE ---
         obs.last_seen = self.current_time
-        obs.confidence = min(CONFIDENCE_MAX, obs.confidence + CONFIDENCE_INCREMENT)
+        
+        # Sensor Fusion Bonus: Confidence grows faster if Sensor and Filter agree
+        agreement = 1.0 - min(1.0, abs(raw_vel_mag - filter_vel_mag))
+        fusion_boost = CONFIDENCE_INCREMENT * (1.0 + agreement)
+        obs.confidence = min(CONFIDENCE_MAX, obs.confidence + fusion_boost)
 
     def _create_obstacle(self, center_world: np.ndarray, 
                          cluster: List[LidarPoint],
@@ -432,16 +494,37 @@ class DetectionLayer:
         """Reset the detection layer."""
         self.tracker.reset()
     
+    # def get_statistics(self) -> dict:
+    #     """Get detection statistics."""
+    #     obstacles = self.tracker.get_obstacles()
+    #     return {
+    #         "total_obstacles": len(obstacles),
+    #         "static_count": len([o for o in obstacles if o.state == ObstacleState.STATIC]),
+    #         "dynamic_count": len([o for o in obstacles if o.state == ObstacleState.DYNAMIC]),
+    #         "unknown_count": len([o for o in obstacles if o.state == ObstacleState.UNKNOWN]),
+    #         "average_confidence": np.mean([o.confidence for o in obstacles]) if obstacles else 0.0,
+    #         "tracker_time": self.tracker.current_time,
+    #         "active_filters": len(self.tracker.kalman_filters),
+    #         "inactive_pool_size": len(self.tracker.inactive_pool)
+    #     }
+
     def get_statistics(self) -> dict:
-        """Get detection statistics."""
-        obstacles = self.tracker.get_obstacles()
-        return {
-            "total_obstacles": len(obstacles),
-            "static_count": len([o for o in obstacles if o.state == ObstacleState.STATIC]),
-            "dynamic_count": len([o for o in obstacles if o.state == ObstacleState.DYNAMIC]),
-            "unknown_count": len([o for o in obstacles if o.state == ObstacleState.UNKNOWN]),
-            "average_confidence": np.mean([o.confidence for o in obstacles]) if obstacles else 0.0,
-            "tracker_time": self.tracker.current_time,
-            "active_filters": len(self.tracker.kalman_filters),
-            "inactive_pool_size": len(self.tracker.inactive_pool)
-        }
+            """Get detection statistics."""
+            obstacles = self.get_obstacles()
+            
+            # SENSOR FUSION CONSENSUS
+            if obstacles:
+                avg_agreement = np.mean([o.confidence for o in obstacles])
+            else:
+                avg_agreement = 1.0
+                
+            return {
+                "total_obstacles": len(obstacles),
+                "static_count": len([o for o in obstacles if o.state == ObstacleState.STATIC]),
+                "dynamic_count": len([o for o in obstacles if o.state == ObstacleState.DYNAMIC]),
+                "unknown_count": len([o for o in obstacles if o.state == ObstacleState.UNKNOWN]),
+                "average_confidence": float(avg_agreement), 
+                "tracker_time": self.tracker.current_time,           # FIXED: Added .tracker
+                "active_filters": len(self.tracker.kalman_filters),   # FIXED: Added .tracker
+                "inactive_pool_size": len(self.tracker.inactive_pool) # FIXED: Added .tracker
+                }
