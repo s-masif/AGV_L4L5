@@ -251,6 +251,9 @@ class VFHDecisionMaker(BaseDecisionMaker):
         Returns:
             VFHNavigationDecision with action and parameters
         """
+
+        obstacles = self.get_fused_obstacles(obstacles)
+
         # Default goal
         if goal_pos is None:
             goal_pos = agv_pos + 10.0 * np.array([np.cos(agv_heading), np.sin(agv_heading)])

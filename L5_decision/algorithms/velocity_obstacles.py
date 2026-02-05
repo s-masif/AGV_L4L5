@@ -550,6 +550,8 @@ class VODecisionMaker(BaseDecisionMaker):
         Returns:
             NavigationDecision with speed and heading commands
         """
+
+        obstacles = self.get_fused_obstacles(obstacles)
         # Update current velocity
         if current_vel is not None:
             self.current_v, self.current_w = current_vel
